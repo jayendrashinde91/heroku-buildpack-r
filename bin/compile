@@ -1,0 +1,177 @@
+#!/usr/bin/env bash
+# bin/compile <build-dir> <cache-dir>
+
+# fail fast
+set -e
+
+# debug
+set -x
+
+shopt -s extglob
+
+# helper functions
+
+function topic() {
+  echo "-----> $*"
+}
+
+function indent() {
+  c='s/^/       /'
+  case $(uname) in
+    Darwin) sed -l "$c";;
+    *)      sed -u "$c";;
+  esac
+}
+
+function read_var() {
+  echo $(head -n 1 $1)
+}
+
+# parse and derive params
+LP_DIR=`cd $(dirname $0); cd ..; pwd`
+BUILD_DIR=$1
+CACHE_DIR=$2
+
+# fix STACK variable if unset
+if [ -z "${STACK}" ];
+then
+  STACK="cedar-14"
+fi
+
+# read in R version if file exists
+if [[ -f "$BUILD_DIR/.r-version" ]];
+then
+  R_VERSION=`read_var $BUILD_DIR/.r-version`
+  echo "NOTE: Using R version override [$R_VERSION]" | indent
+else
+  R_VERSION="3.3.1"
+fi
+
+# read in buildback binary version if file exists
+if [[ -f "$BUILD_DIR/.r-buildpack-version" ]];
+then
+  BUILD_PACK_VERSION=`read_var $BUILD_DIR/.r-buildpack-version`
+  echo "NOTE: Using buildback version override [$BUILD_PACK_VERSION]" | indent
+else
+  BUILD_PACK_VERSION="20160821-0331"
+fi
+
+S3_BUCKET="heroku-buildpack-r"
+R_BINARIES="http://${S3_BUCKET}.s3.amazonaws.com/${STACK}/R-${R_VERSION}-binaries-${BUILD_PACK_VERSION}.tar.gz"
+
+# vendor R into the slug
+topic "Vendoring R $R_VERSION for $STACK stack ($BUILD_PACK_VERSION)"
+
+# download and unpack binaries
+echo "Downloading and unpacking R binaries ($R_BINARIES)" | indent
+
+mkdir -p /app
+pushd /app > /dev/null
+# pushd $BUILD_DIR > /dev/null
+curl $R_BINARIES -s -o - | tar xzf - -C .
+popd > /dev/null
+
+# environment
+# APP_DIR="$BUILD_DIR"
+APP_DIR="/app"
+TOOLS_DIR="$APP_DIR/.tools"
+FAKECHROOT_DIR="$TOOLS_DIR/fakechroot"
+CHROOT_DIR="$APP_DIR/.root"
+CRAN_MIRROR="http://cran.revolutionanalytics.com"
+
+# hacking due to the path changes on Heroku
+# 1. the builpack is prepared under the build directory, which is _not_ /app
+# 2. at runtime, /app is where the binaries/files etc go
+
+# # copy /app into /app/.root/app , excluding .root and .tools
+# # using "tar" method, since cp doesn't support excludes
+# # credit: http://stackoverflow.com/a/2193806
+# pushd /app > /dev/null
+# mkdir -p $CHROOT_DIR/app
+# tar cf - --exclude=.root --exclude=.tools --exclude=tmp . | (cd $CHROOT_DIR/app && tar xvf - )
+# popd > /dev/null
+
+pushd $CHROOT_DIR > /dev/null
+
+# link app dir into chroot
+ln -s /app app
+
+#
+# shiny doesn't like /app symlink though... :-(
+# https://github.com/rstudio/shiny/blob/ac95dcb/R/utils.R#L214-L240
+#
+# Error in normalizePath(appDir, mustWork = TRUE) :
+#   path[1]="/app": Too many levels of symbolic links
+# Calls: <Anonymous> ... as.shiny.appobj.character -> shinyAppDir -> normalizePath
+#
+
+# make /app the home directory since application
+# authors will expect the same behaviour within the chroot
+# as the heroku instance. I.e. /app exists and contains their code etc.
+sed -i 's/root:x:0:0:root:\/root:\/bin\/bash/root:x:0:0:root:\/app:\/bin\/bash/g' etc/passwd
+
+popd > /dev/null
+
+# this isn't ideal, for some reason R isn't able
+# to resolve libraries in /usr/lib/x86_64-linux-gnu
+# so need to symlink into to default location /usr/lib
+# and relative symlinks need fixing
+pushd $CHROOT_DIR/usr/lib
+ln -sfn $CHROOT_DIR/usr/lib/R/lib/libR.so libR.so
+ln -sfn $CHROOT_DIR/usr/lib/x86_64-linux-gnu/libgfortran.so.3 libgfortran.so.3
+ln -sfn $CHROOT_DIR/usr/lib/x86_64-linux-gnu/libgfortran.so.3.0.0 libgfortran.so.3.0.0
+popd > /dev/null
+
+# install dependencies from CRAN
+topic "Executing init.r script"
+
+# get the init.r file to use
+# it has to be init.r or init.R due to logic in detect script
+if [ -f $1/init.r ]; then
+  INIT_FILE="$BUILD_DIR/init.r"
+elif [ -f $1/init.R ]; then
+  INIT_FILE="$BUILD_DIR/init.R"
+else
+  unset INIT_FILE
+fi
+
+# got one?
+# won't have for shiny apps, since run.R is used to detect R app
+if [ -z "$INIT_FILE" ]; then
+
+  # set the CRAN mirror and run the init.r program
+  # working directory must be BUILD_DIR so that local packages/scripts can be found
+  # in this case, /app within the chroot
+  $FAKECHROOT_DIR/bin/fakechroot -l $FAKECHROOT_DIR/lib/fakechroot/libfakechroot.so /usr/bin/fakeroot /usr/sbin/chroot $CHROOT_DIR /usr/bin/R --no-save -s <<RPROG 2>&1 | indent
+setwd("/app")
+r <- getOption("repos");
+r["CRAN"] <- "$CRAN_MIRROR";
+options(repos=r);
+`cat $INIT_FILE`
+RPROG
+
+fi
+
+# determine whether the R script failed
+result=$?
+if [[ "$result" -eq "0" ]]; then
+  echo "R $R_VERSION successfully installed" | indent
+else
+  echo -e "\033[1;31mERROR: R $R_VERSION failed while executing \"init.r\". Check the log for details.\033[0m" | indent
+fi
+
+# copy over, preserving symlinks
+cp --recursive --preserve=links /app/.tools $BUILD_DIR
+cp --recursive --preserve=links /app/.root $BUILD_DIR
+
+# copy over environment
+mkdir -p "$BUILD_DIR/.profile.d"
+cp "$LP_DIR/bin/renv.sh" "$BUILD_DIR/.profile.d/renv.sh"
+
+# debugging
+# echo "--------------"
+# ls -ahl $BUILD_DIR
+# echo "--------------"
+
+
+# TODO: cache build

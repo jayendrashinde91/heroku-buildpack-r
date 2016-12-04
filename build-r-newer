@@ -1,0 +1,238 @@
+#!/bin/bash
+
+#
+# See the following for details:
+#
+# Building R:
+#  http://cran.r-project.org/doc/manuals/R-admin.html#Installing-R-under-Unix_002dalikes
+#  http://cran.r-project.org/doc/manuals/R-admin.html#Essential-programs-and-libraries
+#
+# Packages included on Heroku Cedar
+#  https://devcenter.heroku.com/articles/cedar-ubuntu-packages
+#
+
+# fail fast
+set -e
+
+# debug
+set -x
+
+## HELPERS
+
+function download() {
+  if [ ! -f "$2" ]; then
+    echo Downloading $2...
+    curl $1 -o $2 -s -S
+  else
+    echo Got $2...
+  fi
+}
+
+function update_pkgconfig() {
+  # fix package config files
+  # point them to /app/.apt/usr/... instead of /usr/...
+  search_path=$1
+  for pcfile in $search_path/*.pc
+  do
+    if [[ -f "$pcfile" ]]; then
+      sed -i 's/\/usr/\/app\/.apt\/usr/g' $pcfile
+    fi
+  done;
+}
+
+## SCRIPT
+
+if [ -z "$STACK" ]; then
+  STACK="cedar-14"
+fi
+
+R_VERSION="${1:-3.3.1}"
+R_VERSION_MAJOR=${R_VERSION:0:1}
+BUILD_NO="${2:-`date +%Y%m%d-%H%M`}"
+BASEDIR="$( cd -P "$( dirname "$0" )" && pwd )"
+VENDORDIR=$BASEDIR/vendor
+GCC_VERSION=4.8
+ARCH=`dpkg-architecture -qDEB_HOST_MULTIARCH`
+
+# check arguments
+if ([ -z "$R_VERSION" ] || [ -z "$BUILD_NO" ]); then
+  echo
+  echo "USAGE: $0 VERSION [BUILDNUM]"
+  echo
+  echo "  VERSION    is the R version. E.g. X.X.X"
+  echo "  BUILDNUM   the build number. E.g. YYYYMMDD-HHMM"
+  echo
+  exit 1
+fi
+
+echo ======================================================================
+echo Linux Version  = `uname --all`
+echo Stack          = $STACK
+echo Base Dir       = $BASEDIR
+echo Vendor Dir     = $VENDORDIR
+echo R Version      = $R_VERSION
+echo Build No.      = $BUILD_NO
+echo ======================================================================
+
+# R was installed via Aptfile so that any dependencies get installed,
+# but it won't work due to pathing, so remove all traces of it
+rm     /app/.apt/etc/bash_completion.d/R
+rm     /app/.apt/usr/bin/R
+rm     /app/.apt/usr/bin/Rscript
+rm     /app/.apt/usr/lib/libR.so
+rm     /app/.apt/usr/lib/pkgconfig/libR.pc
+rm -rf /app/.apt/etc/R
+rm -rf /app/.apt/share/R
+rm -rf /app/.apt/usr/lib/R
+rm -rf /app/.apt/usr/share/doc/r-base
+rm -rf /app/.apt/usr/share/doc/r-base-core
+rm -rf /app/.apt/usr/share/doc/r-doc-html
+rm -rf /app/.apt/usr/share/R
+
+echo ======================================================================
+ls -ahlR /app/.apt
+echo ======================================================================
+ls -ahlR /usr/lib
+echo ======================================================================
+
+# trialed and errored on this; copy over libs to gfortran, so
+# that liblto_plugin.so and others can be found
+# (tried using LDFLAGS, LD_LIBRARY_PATH and LIBRARY_PATH but didn't work)
+# cp -r /usr/lib/$ARCH/* /app/.apt/usr/lib/$ARCH
+# cp -r /usr/lib/gcc/$ARCH/$GCC_VERSION/* /app/.apt/usr/lib/gcc/$ARCH/$GCC_VERSION
+
+# fix up package config files ~ point them to /app/.apt/usr/... instead of /usr/...
+update_pkgconfig "/app/.apt/usr/lib/pkgconfig"
+update_pkgconfig "/app/.apt/usr/lib/$ARCH/pkgconfig"
+update_pkgconfig "/app/.apt/usr/share/pkgconfig"
+
+sed -i 's/\/usr/\/app\/.apt\/usr/g' "/app/.apt/usr/lib/$ARCH/tcl8.5/tclConfig.sh"
+sed -i 's/\/usr/\/app\/.apt\/usr/g' "/app/.apt/usr/lib/$ARCH/tk8.5/tkConfig.sh"
+
+# create output directory
+mkdir -p $VENDORDIR
+
+# get the sources
+download "http://cran.r-project.org/src/base/R-$R_VERSION_MAJOR/R-$R_VERSION.tar.gz" R-$R_VERSION.tar.gz
+tar xzf R-$R_VERSION.tar.gz
+
+export PATH="/app/.apt/usr/bin:$PATH"
+
+export CC="gcc -std=gnu99"
+export CFLAGS="-g -O2 -fstack-protector --param=ssp-buffer-size=4 -Wformat -Werror=format-security -D_FORTIFY_SOURCE=2 -g"
+export CPATH="/app/.apt/usr/include:/app/.apt/usr/include/tcl8.5:/usr/include"
+export CPPFLAGS="-I/app/.apt/usr/include -I/usr/include"
+export CPPPATH="/app/.apt/usr/include:/app/.apt/usr/include/tcl8.5:/usr/include"
+export CXX="g++"
+export CXXFLAGS="-g -O2 -fstack-protector --param=ssp-buffer-size=4 -Wformat -Werror=format-security -D_FORTIFY_SOURCE=2 -g"
+export F77="gfortran"
+export FC="gfortran"
+export FCFLAGS="-g -O2 -fstack-protector --param=ssp-buffer-size=4"
+export FFLAGS="-g -O2 -fstack-protector --param=ssp-buffer-size=4"
+export INCLUDE_PATH="/app/.apt/usr/include:/app/.apt/usr/include/tcl8.5:/usr/include"
+export LD_LIBRARY_PATH="/app/.apt/usr/lib:/app/.apt/usr/lib/gcc/$ARCH/$GCC_VERSION:/app/.apt/usr/lib/libblas:/app/.apt/usr/lib/lapack"
+export LDFLAGS="-L/app/.apt/usr/lib -L/app/.apt/usr/lib/gcc/$ARCH/$GCC_VERSION -L/app/.apt/usr/lib/libblas -L/app/.apt/usr/lib/lapack -L/usr/lib -Wl,-Bsymbolic-functions -Wl,-z,relro"
+export LIBnn="lib"
+export LIBRARY_PATH="$LD_LIBRARY_PATH"
+export PKG_CONFIG_PATH="/app/.apt/usr/lib/pkgconfig:/app/.apt/usr/lib/$ARCH/pkgconfig:/app/.apt/usr/share/pkgconfig:/usr/lib/pkgconfig:/usr/lib/$ARCH/pkgconfig:/usr/share/pkgconfig"
+
+export R_BASE="$VENDORDIR/R"
+export R_INCLUDE="$R_BASE/lib64/R/include"
+
+mkdir -p $R_BASE
+
+# copy over our customized vars.mk file
+cp -f $BASEDIR/vars.mk $BASEDIR/R-$R_VERSION/share/make/vars.mk
+
+pushd $BASEDIR/R-$R_VERSION/
+
+# print out environment (for debugging builds)
+echo ======================================================================
+( set -o posix; set )
+
+# build R
+echo ======================================================================
+echo Building R
+echo ======================================================================
+
+# download the recommended packages
+# ./tools/rsync-recommended
+
+# copy over additional recommended packages to include (as specified in vars.mk)
+cp $BASEDIR/packages/* ./src/library/Recommended
+
+# See https://cran.r-project.org/doc/manuals/r-release/R-admin.html#Configuration-options
+./configure --prefix=$R_BASE               \
+            --with-cairo                   \
+            --with-jpeglib                 \
+            --with-readline                \
+            --with-tcltk                   \
+            --with-system-bzlib            \
+            --with-system-pcre             \
+            --with-system-zlib             \
+            --with-blas                    \
+            --with-lapack                  \
+            --enable-R-profiling           \
+            --enable-R-shlib               \
+            --enable-memory-profiling      \
+            --with-tcl-config=/app/.apt/usr/lib/$ARCH/tcl8.5/tclConfig.sh \
+            --with-tk-config=/app/.apt/usr/lib/$ARCH/tk8.5/tkConfig.sh    \
+            --build $ARCH
+
+echo ======================================================================
+echo "# config.log"
+cat config.log
+echo ======================================================================
+
+echo ======================================================================
+echo "# config.status"
+cat config.status
+echo ======================================================================
+
+# copy configuration for debugging purposes
+cp config.* $R_BASE/
+
+make
+echo ======================================================================
+make check
+echo ======================================================================
+
+make install
+make clean
+
+popd
+
+# test R by printing out the capabilities
+echo ======================================================================
+/app/vendor/R/bin/R --no-save -e "capabilities()"
+
+# delete unneeded files to reduce slug size
+# pushd /app
+# rm -rf .apt/etc
+# rm -rf .apt/usr/share/applications
+# rm -rf .apt/usr/share/bug
+# rm -rf .apt/usr/share/doc
+# rm -rf .apt/usr/share/doc-base
+# rm -rf .apt/usr/share/man
+# rm -rf .apt/usr/share/texmf
+# rm -rf .apt/var
+# rm -rf R/lib/R/doc
+# rm -rf R/share
+# find . -type d -name doc -print0 | xargs -0 rm -rf
+# popd
+
+# move .apt under vendor, buildpack compile will move it back
+# since others may use heroku-buildpack-apt with the R buildpack
+# in which case we need control over how the .apt directory gets merged
+mv /app/.apt /app/vendor
+
+# compress and upload to S3 bucket
+BINARIES_FILE="R-$R_VERSION-binaries-$BUILD_NO.tar.gz"
+pushd /app
+tar czf $BINARIES_FILE vendor/.apt vendor/R
+popd
+
+echo ======================================================================
+echo Uploading binaries to S3
+bundle install
+bundle exec ruby ./s3_upload.rb $BINARIES_FILE $STACK
