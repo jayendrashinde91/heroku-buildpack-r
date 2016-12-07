@@ -200,9 +200,13 @@ if [[ ! -z "$INIT_FILE" ]]; then
   cp "$LP_DIR/bin/wrapper.R" $WRAPPER
 
   # perform placeholder insertions
-  sed -i 's/APP_DIR/$BUILD_DIR/g' $WRAPPER
-  sed -i 's/CRAN_MIRROR/$CRAN_MIRROR/g' $WRAPPER
+  sed -i 's/APP_DIR/${BUILD_DIR}/g' $WRAPPER
+  sed -i 's/CRAN_MIRROR/${CRAN_MIRROR}/g' $WRAPPER
   sed -i 's/INIT_FILE_CONTENT/$(cat $INIT_FILE)/g' $WRAPPER
+
+  echo ================
+  cat $WRAPPER
+  echo ================
 
   # set the CRAN mirror and run the init.r program
   # working directory must be /app so that provided packages/scripts can be found
