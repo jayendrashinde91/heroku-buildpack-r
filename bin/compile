@@ -198,6 +198,10 @@ if [[ ! -z "$INIT_FILE" ]]; then
   # prepare wrapper script
   WRAPPER="$LP_DIR/bin/wrapper.R"
 
+  if [[ -f "$WRAPPER" ]]; then
+    echo WRAPPER FOUND...
+  fi
+
   # perform placeholder insertions
   sed -i 's/APP_DIR/$BUILD_DIR/g' $WRAPPER
   sed -i 's/CRAN_MIRROR/$CRAN_MIRROR/g' $WRAPPER
