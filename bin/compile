@@ -143,7 +143,8 @@ ln -s $BUILD_DIR app
 # make APP_DIR the home directory since application
 # authors will expect the same behaviour within the chroot
 # as the heroku instance. I.e. /app exists and contains their code etc.
-sed -i "s/root:x:0:0:root:\/root:\/bin\/bash/root:x:0:0:root:$APP_DIR:\/bin\/bash/g" etc/passwd
+# note: using # as separator
+sed -i "s#root:x:0:0:root:/root:/bin/bash#root:x:0:0:root:$APP_DIR:/bin/bash#g" etc/passwd
 
 popd > /dev/null
 
@@ -200,9 +201,10 @@ if [[ ! -z "$INIT_FILE" ]]; then
   cp "$LP_DIR/bin/wrapper.R" $WRAPPER
 
   # perform placeholder insertions
-  sed -i "s/APP_DIR/$BUILD_DIR/g" $WRAPPER
-  sed -i "s/CRAN_MIRROR/$CRAN_MIRROR/g" $WRAPPER
-  sed -i "s/INIT_FILE_CONTENT/$(cat $INIT_FILE)/g" $WRAPPER
+  # note: using # as separator
+  sed -i 's#APP_DIR#$BUILD_DIR#g' $WRAPPER
+  sed -i 's#CRAN_MIRROR#$CRAN_MIRROR#g' $WRAPPER
+  sed -i 's#INIT_FILE_CONTENT#$(cat $INIT_FILE | sed 's/#/\\#/g')#g' $WRAPPER
 
   echo ================
   cat $WRAPPER
